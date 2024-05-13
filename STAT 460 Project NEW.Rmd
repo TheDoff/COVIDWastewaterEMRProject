@@ -1,0 +1,121 @@
+---
+title: "STAT 460 Project New"
+output: html_document
+date: "2024-02-29"
+---
+
+```{r}
+library(openxlsx)
+library(vars)
+library(forecast)
+library(ggplot2)
+
+CovidData <- read.xlsx("./THE BIG DATA FILE.xlsx")
+CovidData$date = as.Date(CovidData$date, origin = "1899-12-30")
+```
+
+Plotting
+```{r}
+# National
+ggplot(data = CovidData, aes(x=date)) +
+geom_line(aes(y=scale(national_hospital_admissions))) +
+geom_line(aes(y=scale(national_wastewater))) +
+geom_line(aes(y=scale(national_deaths)))
+
+# Minnesota
+ggplot(data = CovidData, aes(x=date)) +
+geom_line(aes(y=scale(mn_hospital_admissions))) +
+geom_line(aes(y=scale(mn_wastewater))) +
+geom_line(aes(y=scale(mn_deaths)))
+
+# Excess Mortality (national) and wastewater
+ggplot(data = CovidData, aes(x=date)) + 
+geom_line(aes(y=scale(national_wastewater), color = "National Wastewater")) +
+geom_line(aes(y=scale(excess_mortality), color = "Excess Mortality")) +
+ggtitle("National Wastewater Levels and Excess Mortality")
+
+cor(CovidData$national_wastewater, CovidData$excess_mortality, use="complete.obs")
+```
+
+ARIMA
+```{r}
+auto.arima(CovidData$national_wastewater) # 2,0,0
+auto.arima(CovidData$excess_mortality) # 1,1,0
+  # 2,0,0 corresponds to a second-order autoregressive model
+  # 1,1,0 corresponds to a differenced first-order autoregressive model
+
+wastewater_residuals <- residuals(arima(CovidData$national_wastewater, order = c(2,0,0)))
+excmort1 <- arima(CovidData$excess_mortality, order = c(1,1,0), xreg = wastewater_residuals)
+
+excmort1 # AIC is -503.08
+
+coeftest(excmort1)
+  # Wastewater residuals are not a significant predictor of excess mortality (using a confidence level of alpha = 0.05), however their inclusion makes the model slightly better (using AIC)
+
+excmort2 <- arima(CovidData$excess_mortality, order = c(1,1,0))
+
+excmort2 # AIC is -502.68
+
+coeftest(excmort2)
+
+autoplot(forecast(excmort2))
+
+predict(excmort1, newxreg = wastewater_residuals, n.ahead = 10)
+predict(excmort2, n.ahead = 10)
+
+```
+
+VAR (National)
+```{r}
+# Create Weekly National TS Objects (Excess Mortality Pre-COVID yielded a stronger model)
+nationaldeaths <-ts(scale(CovidData$national_deaths), start = c(2022, 1), frequency = 52)
+nationalhospital <- ts(scale(CovidData$national_hospital_admissions), start = c(2022, 1), frequency = 52)
+nationalwastewater <- ts(scale(CovidData$national_wastewater), start = c(2022, 1), frequency = 52)
+excessmortality <- ts(scale(CovidData$excess_mortality), start = c(2022, 1), frequency = 52)
+
+
+# Plotting Weekly TS
+autoplot(cbind(nationaldeaths, nationalhospital, nationalwastewater, excessmortality), main = "National Weekly Data")
+
+# ACF & PACF
+acf(nationaldeaths, main = "ACF for National Deaths")
+pacf(nationaldeaths, main = "PACF for National Deaths")
+
+acf(nationalhospital, main = "ACF for National Hospitalizations")
+pacf(nationalhospital, main = "PACF for National Hospitalizations")
+
+acf(nationalwastewater, main = "ACF for National Wastewater")
+pacf(nationalwastewater, main = "PACF for National Wastewater")
+
+acf(excessmortality, main = "ACF for Excess Mortality")
+pacf(excessmortality, main = "PACF for Excess Mortality")
+
+# Lag Selection
+nationalbv <- cbind(nationaldeaths, nationalhospital, nationalwastewater, excessmortality)
+colnames(nationalbv) <- cbind("Deaths", "Hospitalizations", "Wastewater", "Excess Mortality")
+nationallagselect <- VARselect(nationalbv, lag.max = 10, type = "const")
+nationallagselect$selection
+
+nationalweekly <- VAR(nationalbv, p = 1, type = "const", season = NULL, exogen = NULL)
+summary(nationalweekly)
+
+AIC(nationalweekly)
+
+  
+# Last 16 weeks of 2023
+nationalbv2 <- cbind(nationalwastewater, excessmortality)
+
+natmodeldata<-ts(nationalbv2[1:95,], start = c(2022, 1), frequency = 52)
+natWW16<-ts(nationalbv2[96:111,], start = c(2023, 44), frequency = 52)
+natEMR16<-ts(nationalbv2[96:111,], start = c(2023, 44), frequency = 52)
+
+Natlagselect <- VARselect(natmodeldata, lag.max = 10, type = "const")
+Natlagselect$selection
+
+natmodel_minuslast16 <- VAR(natmodeldata, p = 8, type = "const", season = NULL, exogen = NULL)
+natfore_minuslast16 <- forecast(natmodel_minuslast16, h = 8)
+
+autoplot(natfore_minuslast16$forecast$excessmortality, main = "National EMR Forecast Compared to Last 16 Weeks of 2023") + autolayer(natEMR16)
+
+```
+
